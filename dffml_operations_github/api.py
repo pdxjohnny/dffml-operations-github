@@ -72,6 +72,10 @@ class FromDict(object):
     def _convert_createdAt(self, value):
         return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
 
+    def _convert_closedAt(self, value):
+        if value is not None:
+            return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+
     def _convert_labels(self, value):
         return dict(
             map(
