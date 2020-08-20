@@ -1,6 +1,7 @@
 """
 GitHub API Helper
 """
+import asyncio
 import aiohttp
 import datetime
 from typing import Dict, Any
@@ -103,6 +104,18 @@ class GitHubPullRequest(FromDict):
     pass
 
 
+async def wait_minutes(ctx, minutes):
+    ctx.logger.info("Waiting a %d minutes...")
+    for i in range(0, minutes):
+        ctx.logger.info("Waiting minute %d", i)
+        for j in range(0, 60):
+            await asyncio.sleep(1)
+            ctx.logger.info("Waiting minute %d second %d", i, j)
+    async with ctx.parent.lock:
+        ctx.parent.ratelimit = False
+        ctx.parent.ratelimit_over.set()
+
+
 @config
 class GitHubConfig:
     token: str = field("GitHub API token")
@@ -160,10 +173,27 @@ class GitHubContext(BaseDataFlowFacilitatorObjectContext):
         )
         nextPage = True
         while nextPage:
+            # Rate limiting
+            ratelimit = False
+            async with self.parent.lock:
+                ratelimit = self.parent.ratelimit
+            if ratelimit:
+                await self.parent.ratelimit_over.wait()
+            # Make request
             async with self.parent.session.post(
                 self.ENDPOINT, json={"query": req}
             ) as resp:
                 resp_json = await resp.json()
+                # Rate limited
+                if "documentation_url" in resp_json:
+                    async with self.parent.lock:
+                        if self.parent.ratelimit:
+                            continue
+                        self.parent.ratelimit = True
+                        self.parent.ratelimit_over = asyncio.Event()
+                        over = asyncio.create_task(wait_minutes(self, 10))
+                    await over
+                    continue
                 data = self.ensure_member(resp_json, "data")
                 if data is None:
                     errors = self.ensure_member(resp_json, "errors")
@@ -234,6 +264,8 @@ class GitHub(BaseDataFlowFacilitatorObject):
         return tuple("/".join(url.split("/")[-2:]).split("/"))
 
     async def __aenter__(self):
+        self.lock = asyncio.Lock()
+        self.ratelimit = False
         self.headers = {"Authorization": "bearer %s" % (self.config.token)}
         self.session = aiohttp.ClientSession(
             trust_env=True, headers=self.headers
